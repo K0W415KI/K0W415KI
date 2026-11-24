@@ -6,8 +6,10 @@ BIN     := $(BUILD)/asminitio
 
 all: $(BIN)
 
-$(BUILD)/asminitio.o: src/asminitio.asm src/fonts.inc src/font_s.bin src/font_l.bin | $(BUILD)
-	$(NASM) -f elf64 -I src/ src/asminitio.asm -o $@
+SRC     := $(wildcard src/*.asm) src/defs.inc src/fonts.inc $(wildcard src/*.bin)
+
+$(BUILD)/asminitio.o: $(SRC) | $(BUILD)
+	$(NASM) -f elf64 -I src/ src/main.asm -o $@
 
 $(BIN): $(BUILD)/asminitio.o
 	$(LD) -s -o $@ $<

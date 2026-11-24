@@ -29,7 +29,7 @@ def gen(ttf, size, name, outdir):
 
 if __name__ == "__main__":
     outdir = sys.argv[1] if len(sys.argv) > 1 else "src"
-    fonts = [gen(TTF, 13, "font_s", outdir), gen(TTF_BOLD, 26, "font_l", outdir)]
+    fonts = [gen(TTF, 13, "font_s", outdir), gen(TTF_BOLD, 13, "font_sb", outdir), gen(TTF_BOLD, 26, "font_l", outdir)]
     with open(f"{outdir}/fonts.inc", "w") as fh:
         fh.write("; generado por tools/genfont.py -- no editar\n")
         for name, w, h in fonts:
