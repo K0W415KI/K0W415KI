@@ -233,11 +233,20 @@ action_run:
         ret
 
 action_new:
+        cmp     byte [src_mode], 0
+        jne     .reload
         rdtsc
         or      eax, 1
         mov     [seed], eax
         call    gen_data
         jmp     action_run
+.reload:
+        call    load_source
+        test    rax, rax
+        jz      action_run
+        mov     rsi, rax
+        mov     edi, C_RED
+        jmp     show_toast
 
 params_changed:
         mov     byte [dirty], 1
@@ -628,7 +637,7 @@ on_press:
 .tab:   dq      .a_none, .a_run, .a_new, .a_export, .a_nrec, .a_op
         dq      .a_thrdec, .a_thrinc, .a_field, .a_group, .a_sortcol
         dq      .a_sortdir, .a_comp, .a_link, .a_tab, .out, .a_none
-        dq      .out, .a_scroll, .a_reset
+        dq      .out, .a_scroll, .a_reset, .a_rmode, .a_reload
 
 .a_none:
         mov     dword [sel], -1
@@ -729,6 +738,13 @@ on_press:
         jmp     .out
 .a_reset:
         call    reset_layout
+        jmp     .out
+.a_rmode:
+        mov     [rmode], r13b
+        call    params_changed
+        jmp     .out
+.a_reload:
+        call    action_new
         jmp     .out
 
 .right: cmp     r12d, A_COMP
@@ -851,7 +867,7 @@ on_key:
         je      focus_field
         cmp     eax, '1'
         jb      .nonum
-        cmp     eax, '3'
+        cmp     eax, '5'
         jbe     .nrec
 .nonum: cmp     eax, 0xff09                 ; Tab
         je      .next
@@ -907,7 +923,9 @@ on_key:
         jbe     .v2
         mov     edi, 3
 .v2:    jmp     open_viewer
-.nrec:  sub     eax, '1'
+.nrec:  cmp     byte [src_mode], 0
+        jne     .r
+        sub     eax, '1'
         mov     [nrec_sel], eax
         mov     eax, [nrec_values + rax*4]
         mov     [nrec], eax
@@ -1248,6 +1266,17 @@ draw_header:
         mov     ecx, 0xc8d3ea
         mov     r8d, 0x2a3b5e
         call    pill_r
+        mov     ebx, eax
+        call    sb_reset
+        mov     edi, [nthreads]
+        call    sb_num
+        SB_STR  t_threads_sfx
+        mov     edi, ebx
+        mov     esi, 16
+        lea     rdx, [sb_buf]
+        mov     ecx, 0xc8d3ea
+        mov     r8d, 0x2a3b5e
+        call    pill_r
         mov     edi, eax
         mov     esi, 16
         lea     rdx, [t_x8664]
@@ -1280,14 +1309,8 @@ draw_toolbar:
         jmp     .r
 .ok:    call    sb_reset
         SB_STR  t_st_ok1
-        mov     rax, [pipe_ns]
-        add     rax, 500
-        xor     edx, edx
-        mov     ecx, 1000
-        div     rcx
-        mov     rdi, rax
-        call    sb_num
-        SB_STR  t_us
+        mov     rdi, [pipe_ns]
+        call    sb_time
         TEXT    540, TB_Y, sb_buf, C_GREEN, font_sb
         call    sb_reset
         mov     edi, [nrec]
@@ -1629,7 +1652,12 @@ draw_component:
         mov     r9d, C_BOX
         call    fill_round
         mov     r14d, [comp_color + rbx*4]
-        lea     edi, [r12+2]
+        cmp     ebx, 2
+        jne     .hc
+        cmp     byte [rmode], 0
+        je      .hc
+        mov     r14d, 0x4b5263
+.hc:    lea     edi, [r12+2]
         lea     esi, [r13+2]
         mov     edx, BOXW-4
         mov     ecx, 24
@@ -1663,7 +1691,7 @@ draw_component:
         mov     eax, ebx
         jmp     [.l1t + rax*8]
 .l1t:   dq      .c0, .c1, .c2, .c2, .c4
-.c0:    SB_STR  c_a0
+.c0:    SB_STR  src_short
         jmp     .l1d
 .c1:    SB_STR  t_monto_sp
         mov     eax, [filt_op]
@@ -1674,7 +1702,13 @@ draw_component:
         mov     edi, [thr]
         call    sb_num
         jmp     .l1d
-.c2:    SB_STR  t_key
+.c2:    cmp     ebx, 2
+        jne     .c2k
+        cmp     byte [rmode], 0
+        je      .c2k
+        SB_STR  t_bypass
+        jmp     .l1d
+.c2k:   SB_STR  t_key
         mov     eax, [group_key]
         mov     rsi, [grp_colnames + rax*8]
         call    sb_str
@@ -1708,7 +1742,11 @@ draw_component:
         sub     edi, [n_filter]
         call    sb_num
         jmp     .l2d
-.d2:    SB_STR  c_b2
+.d2:    cmp     byte [rmode], 0
+        je      .d2s
+        SB_STR  t_bypass2
+        jmp     .l2d
+.d2s:   SB_STR  c_b2
         jmp     .l2d
 .d3:    SB_STR  c_b3
         jmp     .l2d
@@ -1728,15 +1766,13 @@ draw_component:
         ; linea 3: tiempo medido
         cmp     r15d, 2
         jne     .hit
-        call    sb_reset
-        mov     rax, [comp_ns + rbx*8]
-        add     rax, 50
-        xor     edx, edx
-        mov     ecx, 100
-        div     rcx
-        mov     rdi, rax
-        call    sb_tenths
-        SB_STR  t_us
+        cmp     ebx, 2
+        jne     .tm
+        cmp     byte [rmode], 0
+        jne     .hit
+.tm:    call    sb_reset
+        mov     rdi, [comp_ns + rbx*8]
+        call    sb_time
         lea     edi, [r12+10]
         lea     esi, [r13+69]
         lea     rdx, [sb_buf]
@@ -1837,14 +1873,8 @@ draw_inspector:
         mov     r8d, C_TEXT
         call    kv
         call    sb_reset
-        mov     rax, [comp_ns + rbx*8]
-        add     rax, 50
-        xor     edx, edx
-        mov     ecx, 100
-        div     rcx
-        mov     rdi, rax
-        call    sb_tenths
-        SB_STR  t_us
+        mov     rdi, [comp_ns + rbx*8]
+        call    sb_time
         mov     esi, IY+106
         lea     rdx, [t_k_time]
         lea     rcx, [sb_buf]
@@ -1880,13 +1910,18 @@ draw_inspector:
 .pt:    dq      .p0, .p1, .p2, .p3, .p4
 
 %define PY (IY+180)
-.p0:    TEXT    IX+16, PY, t_p_nrec, C_TEXT, font_s
+.p0:    movzx   eax, byte [src_mode]
+        cmp     eax, 1
+        je      .p0csv
+        cmp     eax, 2
+        je      .p0pg
+        TEXT    IX+16, PY, t_p_nrec, C_TEXT, font_s
         mov     eax, [nrec_sel]
         mov     [seg_sel], eax
         mov     edi, IX+16
         mov     esi, PY+22
-        mov     edx, 94
-        mov     ecx, 3
+        mov     edx, 55
+        mov     ecx, 5
         lea     r8, [nrec_labels]
         mov     r9d, A_NREC
         call    segmented
@@ -1897,6 +1932,78 @@ draw_inspector:
         TEXT    IX+16, PY+60, sb_buf, C_MUTED, font_s
         TEXT    IX+16, PY+79, t_p_gen, C_DIM, font_s
         jmp     .out
+.p0csv: call    sb_reset
+        SB_STR  t_p_src_file
+        SB_STR  src_short
+        TEXT    IX+16, PY, sb_buf, C_TEXT, font_s
+        call    sb_reset
+        SB_STR  t_p_src_size
+        mov     rax, [load_bytes]
+        xor     edx, edx
+        mov     ecx, 100000
+        div     rcx
+        mov     rdi, rax
+        call    sb_tenths
+        SB_STR  t_p_src_delim
+        lea     rsi, [d_comma]
+        cmp     byte [csv_delim], ';'
+        jne     .dl1
+        lea     rsi, [d_semi]
+.dl1:   cmp     byte [csv_delim], 9
+        jne     .dl2
+        lea     rsi, [d_tab]
+.dl2:   call    sb_str
+        TEXT    IX+16, PY+19, sb_buf, C_MUTED, font_s
+        call    .speed
+        TEXT    IX+16, PY+38, sb_buf, C_MUTED, font_s
+        BUTTON  IX+16, PY+62, 160, 26, t_reload, A_RELOAD, 0, ST_BLUE
+        jmp     .out
+.p0pg:  call    sb_reset
+        SB_STR  t_p_pg_srv
+        mov     rsi, [pg_host]
+        test    rsi, rsi
+        jnz     .ph
+        lea     rsi, [t_unixsock]
+.ph:    call    sb_str
+        mov     edi, ':'
+        call    sb_ch
+        mov     edi, [pg_port]
+        call    sb_dec
+        mov     dword [text_max], 37
+        TEXT    IX+16, PY, sb_buf, C_TEXT, font_s
+        call    sb_reset
+        SB_STR  t_p_pg_db
+        mov     rsi, [pg_db]
+        call    sb_str
+        SB_STR  t_p_pg_user
+        mov     rsi, [pg_user]
+        call    sb_str
+        TEXT    IX+16, PY+19, sb_buf, C_MUTED, font_s
+        call    sb_reset
+        SB_STR  t_p_pg_auth
+        mov     rsi, [pg_auth_name]
+        call    sb_str
+        SB_STR  t_dot_sep
+        call    .speed_short
+        TEXT    IX+16, PY+38, sb_buf, C_MUTED, font_s
+        mov     dword [text_max], 0
+        BUTTON  IX+16, PY+62, 160, 26, t_reload, A_RELOAD, 0, ST_BLUE
+        jmp     .out
+; "Lectura: N MB/s"
+.speed: call    sb_reset
+        SB_STR  t_p_src_speed
+.speed_short:
+        mov     rcx, [load_ns]
+        test    rcx, rcx
+        jz      .sp0
+        mov     rax, [load_bytes]
+        imul    rax, rax, 1000
+        xor     edx, edx
+        div     rcx
+        mov     rdi, rax
+        call    sb_num
+.sp0:   SB_STR  t_p_src_mbs
+        ret
 
 .p1:    call    sb_reset
         SB_STR  t_p_expr
@@ -1960,7 +2067,12 @@ draw_inspector:
 .fh:    TEXT    IX+196, PY+63, rdx, C_DIM, font_s
         jmp     .out
 
-.p2:    TEXT    IX+16, PY, t_p_sortkey, C_TEXT, font_s
+.p2:    cmp     byte [rmode], 0
+        je      .p2s
+        TEXT    IX+16, PY, t_p_bypass1, C_MUTED, font_s
+        TEXT    IX+16, PY+19, t_p_bypass2, C_MUTED, font_s
+        jmp     .out
+.p2s:   TEXT    IX+16, PY, t_p_sortkey, C_TEXT, font_s
         call    .groupseg
         TEXT    IX+16, PY+60, t_p_sortalg, C_MUTED, font_s
         TEXT    IX+16, PY+79, t_p_sortsync, C_DIM, font_s
@@ -1968,8 +2080,15 @@ draw_inspector:
 
 .p3:    TEXT    IX+16, PY, t_p_groupby, C_TEXT, font_s
         call    .groupseg
-        TEXT    IX+16, PY+60, t_p_aggs, C_MUTED, font_s
-        TEXT    IX+16, PY+79, t_p_sorted_ok, C_DIM, font_s
+        movzx   eax, byte [rmode]
+        mov     [seg_sel], eax
+        mov     edi, IX+16
+        mov     esi, PY+58
+        mov     edx, 145
+        mov     ecx, 2
+        lea     r8, [rmode_labels]
+        mov     r9d, A_RMODE
+        call    segmented
         jmp     .out
 
 .p4:    TEXT    IX+16, PY, t_p_orderby, C_TEXT, font_s
@@ -2280,27 +2399,27 @@ draw_results:
         xor     esi, esi
         xor     edx, edx
         call    col_header
-        mov     edi, RX+156
+        mov     edi, RX+176
         mov     esi, 1
         mov     edx, 1
         lea     rcx, [t_h_regs]
         call    col_header
-        mov     edi, RX+252
+        mov     edi, RX+300
         mov     esi, 1
         mov     edx, 2
         lea     rcx, [t_h_total]
         call    col_header
-        mov     edi, RX+300
+        mov     edi, RX+346
         mov     esi, 1
         mov     edx, 3
         lea     rcx, [t_h_prom]
         call    col_header
-        mov     edi, RX+344
+        mov     edi, RX+388
         mov     esi, 1
         mov     edx, 4
         lea     rcx, [t_h_min]
         call    col_header
-        mov     edi, RX+394
+        mov     edi, RX+434
         mov     esi, 1
         mov     edx, 5
         lea     rcx, [t_h_max]
@@ -2330,7 +2449,7 @@ draw_results:
         jnz     .bw
         inc     r14
 .bw:    mov     eax, [out_w]
-        sub     eax, 420
+        sub     eax, 460
         mov     [rsp+8], eax                ; ancho maximo de barra
 
         xor     ebx, ebx
@@ -2367,32 +2486,34 @@ draw_results:
         mov     esi, r12d
         mov     ecx, C_TEXT
         lea     r8, [font_s]
+        mov     dword [text_max], 10
         call    draw_text
-        mov     edi, RX+156
+        mov     dword [text_max], 0
+        mov     edi, RX+176
         mov     esi, r12d
         mov     edx, [res_count + r13*4]
         mov     ecx, C_TEXT
         lea     r8, [font_s]
         call    draw_num_right
-        mov     edi, RX+252
+        mov     edi, RX+300
         mov     esi, r12d
         mov     rdx, [res_sum + r13*8]
         mov     ecx, C_TEXT
         lea     r8, [font_s]
         call    draw_num_right
-        mov     edi, RX+300
+        mov     edi, RX+346
         mov     esi, r12d
         mov     edx, [res_avg + r13*4]
         mov     ecx, C_NUM
         lea     r8, [font_s]
         call    draw_num_right
-        mov     edi, RX+344
+        mov     edi, RX+388
         mov     esi, r12d
         mov     edx, [res_min + r13*4]
         mov     ecx, C_MUTED
         lea     r8, [font_s]
         call    draw_num_right
-        mov     edi, RX+394
+        mov     edi, RX+434
         mov     esi, r12d
         mov     edx, [res_max + r13*4]
         mov     ecx, C_MUTED
@@ -2403,7 +2524,7 @@ draw_results:
         cmp     ebp, 24
         jl      .nobar
         lea     esi, [r12+4]
-        RECT    RX+408, esi, ebp, 11, 0x232837
+        RECT    RX+446, esi, ebp, 11, 0x232837
         mov     rax, [res_sum + r13*8]
         imul    rax, rbp
         xor     edx, edx
@@ -2419,7 +2540,7 @@ draw_results:
         mov     eax, [res_key + r13*4]
         and     eax, 7
         mov     r8d, [bar_colors + rax*4]
-        mov     edi, RX+408
+        mov     edi, RX+446
         lea     esi, [r12+4]
         mov     ecx, 11
         call    fill_rect
@@ -2446,7 +2567,7 @@ draw_results:
         lea     esi, [r12-6]
         RECT    RX+12, esi, edx, 1, C_BORDER
         TEXT    RX+16, r12d, t_total, C_YELLOW, font_sb
-        mov     edi, RX+156
+        mov     edi, RX+176
         mov     esi, r12d
         mov     edx, [n_filter]
         mov     ecx, C_YELLOW
@@ -2461,7 +2582,7 @@ draw_results:
         jmp     .ts
 .tsd:   mov     [rsp], rax
         mov     rdx, rax
-        mov     edi, RX+252
+        mov     edi, RX+300
         mov     esi, r12d
         mov     ecx, C_YELLOW
         lea     r8, [font_sb]
@@ -2474,7 +2595,7 @@ draw_results:
         xor     edx, edx
         div     rcx
         mov     rdx, rax
-        mov     edi, RX+300
+        mov     edi, RX+346
         mov     esi, r12d
         mov     ecx, C_YELLOW
         lea     r8, [font_sb]
@@ -2541,11 +2662,12 @@ draw_viewer:
         ; encabezados
         cmp     r14d, 3
         je      .hres
-        TEXT    RX+16, OY+68, t_v_idx, C_MUTED, font_sb
-        TEXT    RX+96, OY+68, t_v_reg, C_MUTED, font_sb
-        TEXT    RX+196, OY+68, t_v_mes, C_MUTED, font_sb
-        TEXT    RX+246, OY+68, t_v_canal, C_MUTED, font_sb
-        mov     edi, RX+400
+        TEXT    RX+92, OY+68, t_v_idx, C_MUTED, font_sb
+        TEXT    RX+112, OY+68, t_v_reg, C_MUTED, font_sb
+        TEXT    RX+222, OY+68, t_v_mes, C_MUTED, font_sb
+        TEXT    RX+294, OY+68, t_v_canal, C_MUTED, font_sb
+        mov     edi, [out_w]
+        add     edi, RX - 30
         mov     esi, OY+68
         lea     rdx, [t_v_monto]
         mov     ecx, C_MUTED
@@ -2588,17 +2710,19 @@ draw_viewer:
         ; registro: indice real segun el flujo
         mov     r13d, ebp
         cmp     r14d, 1
-        jne     .l2
-        mov     r13d, [f_idx + rbp*4]
-.l2:    cmp     r14d, 2
+        je      .lf
+        cmp     r14d, 2
         jne     .l3
-        mov     r13d, [s_idx + rbp*4]
+        cmp     byte [rmode], 0
+        jne     .lf                         ; SORT en bypass: mismo flujo
+        mov     rax, [p_sidx]
+        mov     r13d, [rax + rbp*4]
         ; separador de grupo en el flujo ordenado
         test    ebp, ebp
         jz      .l3
-        mov     eax, [group_key]
-        mov     rcx, [key_base + rax*8]
-        mov     eax, [s_idx + rbp*4 - 4]
+        mov     edx, [group_key]
+        mov     rcx, [col_key + rdx*8]
+        mov     eax, [rax + rbp*4 - 4]
         movzx   eax, byte [rcx + rax]
         movzx   edx, byte [rcx + r13]
         cmp     eax, edx
@@ -2607,24 +2731,39 @@ draw_viewer:
         sub     edx, 36
         lea     esi, [r12-2]
         RECT    RX+10, esi, edx, 1, 0x80d9822b
+        jmp     .l3
+.lf:    mov     rax, [p_fidx]
+        mov     r13d, [rax + rbp*4]
 .l3:    lea     edx, [rbp+1]
-        mov     edi, RX+76
+        mov     edi, RX+100
         mov     esi, r12d
         mov     ecx, C_DIM
         lea     r8, [font_s]
         call    draw_num_right
-        movzx   eax, byte [rec_region + r13]
-        mov     rdx, [region_name + rax*8]
-        TEXT    RX+96, r12d, rdx, C_TEXT, font_s
-        movzx   eax, byte [rec_mes + r13]
-        mov     rdx, [month_name + rax*8]
-        TEXT    RX+196, r12d, rdx, C_TEXT, font_s
-        movzx   eax, byte [rec_canal + r13]
-        mov     rdx, [canal_name + rax*8]
-        TEXT    RX+246, r12d, rdx, C_MUTED, font_s
-        mov     edi, RX+400
+        mov     dword [text_max], 13
+        mov     rax, [col_key]
+        movzx   edi, byte [rax + r13]
+        xor     eax, eax
+        call    col_name
+        TEXT    RX+112, r12d, rax, C_TEXT, font_s
+        mov     dword [text_max], 8
+        mov     rax, [col_key+8]
+        movzx   edi, byte [rax + r13]
+        mov     eax, 1
+        call    col_name
+        TEXT    RX+222, r12d, rax, C_TEXT, font_s
+        mov     dword [text_max], 11
+        mov     rax, [col_key+16]
+        movzx   edi, byte [rax + r13]
+        mov     eax, 2
+        call    col_name
+        TEXT    RX+294, r12d, rax, C_MUTED, font_s
+        mov     dword [text_max], 0
+        mov     edi, [out_w]
+        add     edi, RX - 30
         mov     esi, r12d
-        mov     edx, [rec_monto + r13*4]
+        mov     rax, [p_monto]
+        mov     edx, [rax + r13*4]
         mov     ecx, C_NUM
         lea     r8, [font_s]
         call    draw_num_right
@@ -2632,7 +2771,9 @@ draw_viewer:
 .rres:  mov     r13d, [res_order + rbp*4]
         mov     edi, [res_key + r13*4]
         call    group_name
+        mov     dword [text_max], 16
         TEXT    RX+16, r12d, rax, C_TEXT, font_s
+        mov     dword [text_max], 0
         mov     edi, RX+200
         mov     esi, r12d
         mov     edx, [res_count + r13*4]
@@ -2873,6 +3014,11 @@ draw_tooltip:
 .comp:  push    rbx
         mov     ebx, [hover_par]
         mov     rsi, [comp_desc + rbx*8]
+        test    ebx, ebx
+        jnz     .cd
+        movzx   eax, byte [src_mode]
+        mov     rsi, [src_desc + rax*8]
+.cd:
         lea     rdi, [tt_l1]
         mov     edx, 96
         call    copy_z

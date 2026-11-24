@@ -10,8 +10,9 @@
 %define MAX_DIM         4096
 
 ; ---------------------------------------------------------------- pipeline
-%define NMAX            1000000
-%define MAXGRP          12
+%define NCAP            200000000          ; filas maximas (reserva virtual)
+%define MAXGRP          64
+%define MAXT            16
 %define STAGE           550                 ; ms por etapa de animacion
 %define ANIM_LINKS_END  (4*STAGE)
 %define ANIM_END        (ANIM_LINKS_END + 600)
@@ -94,7 +95,9 @@
 %define A_VIEWER        17
 %define A_SCROLL        18
 %define A_RESET         19
-%define A_COUNT         20
+%define A_RMODE         20
+%define A_RELOAD        21
+%define A_COUNT         22
 %define MAXHITS         160
 
 ; ------------------------------------------------------------- estilos UI

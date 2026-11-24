@@ -772,6 +772,7 @@ next_cp:
 ; draw_text(edi x, esi y, rdx str, ecx color, r8 fuente) -> eax = x final
 draw_text:
         push    rbx
+        push    rbp
         push    r12
         push    r13
         push    r14
@@ -781,9 +782,16 @@ draw_text:
         mov     rbx, rdx
         mov     r14d, ecx
         mov     r15, r8
-.lp:    call    next_cp
+        xor     ebp, ebp                    ; caracteres dibujados
+.lp:    mov     eax, [text_max]             ; limite opcional (0 = sin limite)
+        test    eax, eax
+        jz      .cp
+        cmp     ebp, eax
+        jae     .done
+.cp:    call    next_cp
         test    edx, edx
         jz      .done
+        inc     ebp
         cmp     edx, ' '
         je      .adv
         mov     edi, r12d
@@ -798,6 +806,7 @@ draw_text:
         pop     r14
         pop     r13
         pop     r12
+        pop     rbp
         pop     rbx
         ret
 

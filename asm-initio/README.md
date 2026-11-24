@@ -4,7 +4,19 @@ Un GDE de flujo de datos, al estilo de los grafos de Ab Initio, escrito **100 % 
 
 ![ASM Initio](docs/screenshot.png)
 
-El grafo `INPUT FILE → FILTER BY EXPRESSION → SORT → ROLLUP → OUTPUT TABLE` procesa hasta **1.000.000 de registros** de ventas (región, mes, canal y monto). Los componentes se arrastran, sus propiedades se editan, se pueden ver los registros que pasan por cada flujo y el SQL equivalente se reescribe en vivo.
+El grafo `INPUT → FILTER BY EXPRESSION → SORT → ROLLUP → OUTPUT TABLE` procesa hasta **200 millones de registros** de ventas (región, mes, canal y monto). Los datos pueden ser generados, venir de un **CSV** o de **PostgreSQL**. Los componentes se arrastran, sus propiedades se editan, se pueden ver los registros que pasan por cada flujo y el SQL equivalente se reescribe en vivo.
+
+## Rendimiento
+
+Misma consulta y mismos datos; todas las herramientas devuelven idénticos resultados. Detalle y metodología en [bench/RESULTADOS.md](bench/RESULTADOS.md).
+
+| 100 M filas | Ya en memoria | Desde CSV (2,2 GB) |
+|---|---:|---:|
+| **ASM Initio** (4 hilos) | **~80 ms** | **2,1 s** |
+| DuckDB 2.0 | 117 ms | 2,9 s |
+| Polars 2.1 | 152 ms | 2,7 s |
+| C `-O3` + OpenMP | 119 ms | — |
+| pandas 3.0 | 2.911 ms | 13,6 s |
 
 ## Qué podés hacer
 
@@ -25,6 +37,32 @@ El grafo `INPUT FILE → FILTER BY EXPRESSION → SORT → ROLLUP → OUTPUT TAB
 <img src="docs/visor.png" width="49%" alt="Visor de datos">
 </p>
 
+## Fuentes de datos
+
+```sh
+./build/asminitio                         # 1 M filas generadas (hasta 100 M desde la UI)
+./build/asminitio --rows 200M             # cualquier cantidad hasta 200 M
+./build/asminitio --csv ventas.csv        # CSV con , ; o TAB
+PGHOST=127.0.0.1 PGUSER=yo PGPASSWORD=... PGDATABASE=dw \
+  ./build/asminitio --pg "SELECT region, mes, canal, monto FROM ventas"
+```
+
+- **CSV:**
+  - las columnas se reconocen por nombre: `region`/`zona`, `mes`/`month`, `canal`/`channel` y `monto`/`amount`/`importe`/`total`;
+  - acepta comillas, BOM y `\r\n`;
+  - se lee mapeado en memoria y se parsea en paralelo (unos 1,1 GB/s);
+  - las categorías se codifican con diccionarios por hilo, hasta 63 valores distintos por columna más "(otros)".
+- **PostgreSQL:** cliente nativo del protocolo v3, sin libpq.
+  - Conecta por socket Unix o TCP a una IPv4 o `localhost`; no resuelve DNS.
+  - Autentica con trust, password, md5 o **SCRAM-SHA-256**, verificando la firma del servidor. SHA-256, HMAC, PBKDF2, MD5 y base64 están escritos en ensamblador.
+  - Trae los datos con `COPY (consulta) TO STDOUT (FORMAT csv)`.
+- **Modo benchmark:** `--bench [N]` corre sin ventana e imprime los tiempos por etapa y el resultado. `--dump-csv` y `--dump-bin` vuelcan el dataset.
+
+<p>
+<img src="docs/postgres.png" width="49%" alt="Fuente PostgreSQL">
+<img src="docs/csv100m.png" width="49%" alt="CSV de 100 M filas, ROLLUP en memoria">
+</p>
+
 ## Lo técnico
 
 - **ELF estático sin libc, sin Xlib y sin loader dinámico.** Solo syscalls: `socket`, `connect`, `poll`, `read`, `write`, `mmap`, `shmget`, `shmat`, `clock_gettime`, `open`…
@@ -41,13 +79,14 @@ El grafo `INPUT FILE → FILTER BY EXPRESSION → SORT → ROLLUP → OUTPUT TAB
   - curvas Bézier cúbicas en punto fijo, rasterizadas con una máscara de cobertura;
   - sombras, degradés y texto con alfa de 8 bits.
 - **UI en modo inmediato:** cada frame se dibuja completo y registra sus zonas clickeables; los eventos se resuelven contra esa lista.
-- **Pipeline:**
+- **Pipeline paralelo** con hilos propios (`clone` + `futex`, sin pthreads), sobre columnas reservadas con `mmap`:
   - filtro *branchless* (`setcc` + suma), especializado por operador;
-  - *counting sort* estable O(n);
+  - *counting sort* estable en paralelo, con posiciones por hilo y clave;
   - *rollup* sobre la entrada ordenada;
-  - *insertion sort* del resultado.
-  - Cada etapa se mide por separado.
-- Resultados validados contra una implementación de referencia en Python.
+  - modo alternativo **ROLLUP en memoria**: agrega dentro del filtro y saltea el SORT, como la opción equivalente de Ab Initio;
+  - cada etapa se mide por separado.
+- **Generador determinístico por bloques:** produce el mismo dataset sin importar la cantidad de hilos.
+- Resultados validados contra pandas, Polars, DuckDB, C y PostgreSQL.
 
 ## Compilar y ejecutar
 
@@ -67,7 +106,7 @@ Necesita un servidor X con visual TrueColor de 24/32 bits: Xorg, o XWayland en e
 |---|---|
 | `R` / `Enter` / `Espacio` | Ejecutar el grafo |
 | `N` | Datos nuevos |
-| `1` `2` `3` | 10K / 100K / 1M registros |
+| `1` … `5` | 100K / 1M / 10M / 50M / 100M registros |
 | `+` / `-` | Umbral del filtro |
 | `F` | Tipear el umbral (`Enter` confirma, `Esc` cancela) |
 | `O` | Siguiente operador del filtro |
@@ -84,6 +123,12 @@ Necesita un servidor X con visual TrueColor de 24/32 bits: Xorg, o XWayland en e
 ```
 asm-initio/
 ├── src/main.asm    # entrada, bucle principal, datos y estado
+├── src/threads.asm # hilos con clone/futex
+├── src/csv.asm     # lector CSV paralelo con diccionarios
+├── src/pg.asm      # cliente PostgreSQL (protocolo v3, SCRAM, md5)
+├── src/crypto.asm  # SHA-256, HMAC, PBKDF2, MD5, base64
+├── src/cli.asm     # argumentos, benchmark y volcados
+├── bench/          # benchmark comparativo y resultados
 ├── src/x11.asm     # protocolo X11, auth, MIT-SHM, teclado, cursores
 ├── src/gfx.asm     # rasterizador: blending, AA, Bézier, texto
 ├── src/data.asm    # generador, pipeline, orden, exportación CSV
